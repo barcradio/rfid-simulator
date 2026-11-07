@@ -8,6 +8,7 @@ class DistributionConfig:
     type: str
     center_seconds: float | None = None
     spread_seconds: float | None = None
+    arrivals_seconds: list[float] = field(default_factory=list)
 
 
 @dataclass
@@ -50,8 +51,16 @@ class ScenarioConfig:
             raise ValueError("scenario bib numbers must fit in four decimal digits")
         if self.runner_count > self.bib_end - self.bib_start + 1:
             raise ValueError("runner_count exceeds the scenario bib range")
-        if self.distribution.type not in {"truncated-normal", "log-normal"}:
-            raise ValueError("distribution type must be truncated-normal or log-normal")
+        if self.distribution.type not in {"truncated-normal", "log-normal", "recorded"}:
+            raise ValueError("distribution type must be truncated-normal, log-normal or recorded")
+        if self.distribution.type == "recorded":
+            arrivals = self.distribution.arrivals_seconds
+            if len(arrivals) != self.runner_count:
+                raise ValueError("recorded arrivals_seconds must contain one arrival per runner")
+            if any(not math.isfinite(value) or not 0 <= value <= self.duration_seconds for value in arrivals):
+                raise ValueError("recorded arrivals_seconds must be finite and within scenario duration")
+            if arrivals != sorted(arrivals):
+                raise ValueError("recorded arrivals_seconds must be sorted")
         if self.burst.max_size < 1:
             raise ValueError("burst max_size must be at least 1")
         if self.burst.max_duration_seconds < 0:
@@ -80,6 +89,9 @@ class ScenarioConfig:
         distribution = data.get("distribution", {})
         burst = data.get("burst", {})
         noise = data.get("noise", {})
+        arrivals = distribution.get("arrivals_seconds", []) if isinstance(distribution, dict) else []
+        if not isinstance(arrivals, list):
+            raise ValueError("arrivals_seconds must be an array")
         scenario = cls(
             name=str(data["name"]),
             version=int(data.get("version", 1)),
@@ -92,6 +104,7 @@ class ScenarioConfig:
                 type=str(distribution["type"]),
                 center_seconds=(float(distribution["center_seconds"]) if distribution.get("center_seconds") is not None else None),
                 spread_seconds=(float(distribution["spread_seconds"]) if distribution.get("spread_seconds") is not None else None),
+                arrivals_seconds=[float(value) for value in arrivals],
             ),
             burst=BurstConfig(
                 max_size=int(burst["max_size"]),
@@ -118,6 +131,7 @@ class ScenarioConfig:
                 "type": self.distribution.type,
                 "center_seconds": self.distribution.center_seconds,
                 "spread_seconds": self.distribution.spread_seconds,
+                **({"arrivals_seconds": list(self.distribution.arrivals_seconds)} if self.distribution.type == "recorded" else {}),
             },
             "burst": {
                 "max_size": self.burst.max_size,
@@ -145,6 +159,8 @@ class ScenarioScheduler:
         count = self.scenario.runner_count
         duration = self.scenario.duration_seconds
         distribution = self.scenario.distribution
+        if distribution.type == "recorded":
+            return list(distribution.arrivals_seconds)
         if distribution.type == "truncated-normal":
             center = distribution.center_seconds or 0
             spread = distribution.spread_seconds or 1

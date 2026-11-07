@@ -38,3 +38,28 @@ def test_scenario_api_rejects_malformed_payload() -> None:
         })
 
     assert response.status_code == 400
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("name,count,duration,noise_percent", [
+    ("Start Line", 341, 621.1, 2),
+    ("Finish Line", 253, 65681.0, 25),
+    ("Aid2", 310, 13022.414, 25),
+])
+def test_recorded_scenarios_are_available_and_selectable(name, count, duration, noise_percent) -> None:
+    with TestClient(create_app()) as client:
+        listed = client.get("/test/scenarios")
+        assert listed.status_code == 200
+        profile = next(item for item in listed.json()["scenarios"] if item["name"] == name)
+        assert profile["distribution"]["type"] == "recorded"
+        assert len(profile["distribution"]["arrivals_seconds"]) == count
+        assert profile["distribution"]["arrivals_seconds"][0] == 0
+        assert profile["distribution"]["arrivals_seconds"][-1] == duration
+        response = client.put("/test/scenario", json={"name": name, "time_scale": 600})
+        assert response.status_code == 200
+        selected = response.json()["scenario"]
+        assert selected["runner_count"] == count
+        assert selected["duration_seconds"] == duration
+        assert selected["time_scale"] == 600
+        assert selected["distribution"] == profile["distribution"]
+        assert selected["noise"] == {"percent": noise_percent}

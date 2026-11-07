@@ -65,11 +65,28 @@ Built-in scenarios currently include:
 
 | Scenario | Purpose | Duration | Runners | Burst max | Distribution |
 |---|---|---:|---:|---:|---|
-| **Start Line** | Heavy early race-start traffic with a long tail | 1 hour | 500 | 20 | Truncated normal |
-| **Finish Line** | Intermittent finish traffic with a long tail | 17 hours | 500 | 5 | Log-normal |
+| **Start Line** | Recorded start arrivals from StartLine.csv | 10m 21.1s | 341 | 20 | Recorded timeline |
+| **Finish Line** | Recorded finish arrivals from FinishLine.csv | 18h 14m 41s | 253 | 5 | Recorded timeline |
+| **Aid2** | Recorded aid-station arrivals from Aid2.csv | 3h 37m 2.414s | 310 | 20 | Recorded timeline |
 | **Short Burst** | Fast development/integration scenario | 60 seconds | 50 | 20 | Truncated normal |
 
 The scenario configuration is the source of truth for the traffic schedule. Each scenario has a deterministic `random_seed`, so the same configuration produces the same arrival schedule. Runner tags remain unique when `report_each_tag_once` is enabled.
+
+Start Line and Finish Line use every timestamp from the archived `StartLine.csv` and `FinishLine.csv` recordings, sorted chronologically and converted to seconds since each recording's earliest read. The first runner is emitted immediately; all subsequent gaps, simultaneous arrivals, and the finish timeline's midnight rollover are preserved. The original recording windows are September 25, 2026 06:06:26.827-06:16:47.927 for start and September 25 23:39:23 through September 26 17:54:04 for finish. The finish profile does **not** include the wait between race start and the first finisher.
+
+These profiles replay timing, not recorded bib identities: tags are generated using the existing tag-order setting and synthetic bib ranges 1-341 (start), 1-310 (Aid2), and 1-253 (finish). Aid2 uses every timestamp from the archived `Aid2.csv`, normalized to its first arrival just like the other profiles. Short Burst remains synthetic.
+
+Noise is randomly generated, not replayed from the logs. The archived `Startline.log` contains 7 rejected-tag warnings for 341 runners; `Aid2.log` contains 77 for 310 runners, including repeated tags and one warning after the last runner. These give measured additive rates of 2.05% and 24.84% (noise reads divided by runner reads, not all reads), rounded to **2% for Start Line** and **25% for Aid2**. **Finish Line also uses 25%**, borrowing the higher observed rate because no finish log is available. The profiles add noise with that probability at each runner arrival without consuming or delaying a runner. Counts are approximate rather than fixed; a fixed seed and tag-order configuration make the random sequence repeatable. Log timestamps, tag values, malformed-message errors, and connection failures are not replayed.
+
+The measured offsets are embedded in the scenario JSON files, so the simulator does not need the original recordings. The raw CSVs and logs are kept outside the repository. To regenerate a profile, restore the CSVs to the ignored `rfidreader_data/` directory or substitute their archived paths, then run from the repository root:
+
+```powershell
+python scripts\import_reader_profile.py rfidreader_data\StartLine.csv src\fx90_simulator\scenarios\start-line.json --noise-percent 2
+python scripts\import_reader_profile.py rfidreader_data\Aid2.csv src\fx90_simulator\scenarios\aid2.json --noise-percent 25
+python scripts\import_reader_profile.py rfidreader_data\FinishLine.csv src\fx90_simulator\scenarios\finish-line.json --noise-percent 25
+```
+
+The importer replaces the destination's timing, runner count, synthetic bib range, and noise setting while preserving its name, burst settings, seed, and time scale. It treats each CSV row as an arrival. `--noise-percent` defaults to zero when omitted.
 
 Scenario noise is **additive**: configured noise events are inserted in addition to the scheduled runner reads rather than replacing them. This means a 500-runner scenario still delivers all 500 legitimate runner tags even when noise is enabled.
 
@@ -82,7 +99,7 @@ The control panel provides four time-scale choices:
 600x  six hundred times faster
 ```
 
-For example, the one-hour Start Line scenario completes in about one minute at 60×, while the 17-hour Finish Line scenario completes in about 1.7 minutes at 600×.
+For example, Start Line completes in about 10.35 seconds at 60x, while Finish Line completes in about 109.47 seconds at 600x.
 
 Within a scenario burst, the scheduled arrival spacing is also scaled by `time_scale`. The configured `max_duration_seconds` therefore represents actual simulated spacing between events, not just a grouping hint.
 
@@ -92,7 +109,7 @@ A scenario definition has this general shape:
 
 ```json
 {
-  "name": "Start Line",
+  "name": "Custom Start",
   "version": 1,
   "type": "start-line",
   "duration_seconds": 3600,
@@ -117,7 +134,18 @@ A scenario definition has this general shape:
 }
 ```
 
-Supported arrival distributions are `truncated-normal` and `log-normal`. Burst settings limit how many scheduled arrivals may be grouped together and the maximum simulated duration of that burst. Scenario validation also ensures bib numbers fit the four-digit decimal RFID representation and that the configured runner count fits the bib range.
+Supported arrival distributions are `truncated-normal`, `log-normal`, and `recorded`. A recorded distribution replaces the statistical parameters with an explicit schedule:
+
+```json
+{
+  "type": "recorded",
+  "arrivals_seconds": [0, 17.407, 61.623]
+}
+```
+
+`arrivals_seconds` must contain exactly `runner_count` finite, nonnegative offsets in chronological order, all within `duration_seconds`. Equal offsets are allowed for simultaneous arrivals. Recorded offsets are used directly without random sampling or jitter; changing the seed only changes synthetic tag ordering and noise generation.
+
+Burst settings limit how many scheduled arrivals may be grouped together and the maximum simulated duration of that burst. Scenario validation also ensures bib numbers fit the four-digit decimal RFID representation and that the configured runner count fits the bib range.
 
 To inspect the available scenarios through the API:
 
@@ -213,7 +241,7 @@ pytest -m stress
 
 The `stress` marker is reserved for tests that intentionally generate large or high-volume traffic so those tests do not have to run on every small code change.
 
-Scenario tests cover built-in scenario loading, deterministic scheduling, duration bounds, burst limits, bib-range validation, deterministic tag generation, and additive scenario noise behavior.
+Scenario tests cover built-in scenario loading and properties, accelerated reader emission timing, recorded schedule validation and API selection, deterministic synthetic scheduling, duration bounds, burst limits, bib-range validation, deterministic tag generation, and additive scenario noise behavior. Exact comparisons against every recorded CSV arrival run when the corresponding archived CSV is restored to `rfidreader_data/`; otherwise pytest reports those comparisons as skipped. The Docker image does not include the recordings.
 
 ## Zebra FXR90 / Ultra Tracker contract
 
