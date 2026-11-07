@@ -14,6 +14,7 @@ from .test_config import TestConfig
 Sender = Callable[[str], Awaitable[None]]
 Closer = Callable[[], Awaitable[None]]
 logger = logging.getLogger(__name__)
+MAX_BUFFERED_MESSAGES = 1000
 
 
 class Reader:
@@ -33,10 +34,23 @@ class Reader:
         self._started_at = 0.0
         self._last_error = ""
         self._custom_noise_remaining = 0
+        self._buffered_messages: list[str] = []
 
     def register_sender(self, sender: Sender, closer: Closer) -> None:
         self._senders[sender] = closer
         logger.info("[FX90] WebSocket CONNECTED | clients=%d", len(self._senders))
+        if self._buffered_messages:
+            asyncio.create_task(self._flush_buffered_messages(sender))
+
+    async def _flush_buffered_messages(self, sender: Sender) -> None:
+        messages, self._buffered_messages = self._buffered_messages, []
+        logger.info("[FX90] FLUSHING BUFFERED MESSAGES | count=%d", len(messages))
+        for message in messages:
+            try:
+                await sender(message)
+            except Exception:
+                self.unregister_sender(sender)
+                break
 
     def unregister_sender(self, sender: Sender) -> None:
         self._senders.pop(sender, None)
@@ -78,6 +92,7 @@ class Reader:
         self._noise_tags_sent = 0
         self._custom_noise_remaining = 0
         self._last_error = ""
+        self._buffered_messages.clear()
 
     def status(self) -> dict:
         return {
@@ -262,6 +277,11 @@ class Reader:
         self._senders.clear()
 
     async def _broadcast(self, message: str) -> None:
+        if not self._senders:
+            self._buffered_messages.append(message)
+            if len(self._buffered_messages) > MAX_BUFFERED_MESSAGES:
+                del self._buffered_messages[: len(self._buffered_messages) - MAX_BUFFERED_MESSAGES]
+            return
         for sender in list(self._senders):
             try: await sender(message)
             except Exception: self.unregister_sender(sender)

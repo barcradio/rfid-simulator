@@ -19,6 +19,11 @@ class TagGenerator:
         self.runner_count = runner_count
         self.tag_order = tag_order
         self.rng = rng or random
+        if tag_order == "random" and runner_count < len(self.bibs):
+            # sample from the whole bib range, not just the first runner_count bibs
+            self._race_bibs = self.rng.sample(self.bibs, runner_count)
+        else:
+            self._race_bibs = self.bibs[:runner_count]
         self._custom_noise_remaining = list(noise_tags) if noise_tags else []
         self._reported_runner_tags: set[str] = set()
         runner_tags = set(self.race_tags())
@@ -41,7 +46,7 @@ class TagGenerator:
         return sorted(tags)
 
     def race_tags(self) -> list[str]:
-        tags = self.bibs[: self.runner_count]
+        tags = list(self._race_bibs)
         if self.tag_order == "random":
             self.rng.shuffle(tags)
         return [self._tag_for_bib(bib) for bib in tags]
